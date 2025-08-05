@@ -418,6 +418,468 @@ class PreferencesDialog(tk.Toplevel):
         # LANG: Label for 'Output' Settings/Preferences tab
         root_notebook.add(output_frame, text=tr.tl('Output'))  # Tab heading in settings
 
+    def __setup_plugin_tab(self, notebook: ttk.Notebook) -> None:  # noqa: CCR001
+        # Plugin settings and info
+        plugins_frame = nb.Frame(notebook)
+        plugins_frame.columnconfigure(0, weight=1)
+        row = AutoInc(start=0)
+        self.plugdir = tk.StringVar()
+        self.plugdir.set(str(config.get_str('plugin_dir')))
+        # LANG: Label for location of third-party plugins folder
+        self.plugdir_label = nb.Label(plugins_frame, text=tr.tl('Plugins folder') + ':')
+        self.plugdir_label.grid(padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
+        self.plugdir_entry = ttk.Entry(plugins_frame, takefocus=False,
+                                    textvariable=self.plugdir)  # Link StringVar to Entry widget
+        self.plugdir_entry.grid(columnspan=4, padx=self.PADX, pady=self.BOXY, sticky=tk.EW, row=row.get())
+        with row as cur_row:
+            nb.Label(
+                plugins_frame,
+                # Help text in settings
+                # LANG: Tip/label about how to disable plugins
+                text=tr.tl(
+                    "Tip: You can disable a plugin by{CR}adding '{EXT}' to its folder name").format(EXT='.disabled')
+            ).grid(columnspan=1, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=cur_row)
+
+            # Open Plugin Folder Button
+            self.open_plug_folder_btn = ttk.Button(
+                plugins_frame,
+                # LANG: Label on button used to open the Plugin Folder
+                text=tr.tl('Open Plugins Folder'),
+                command=lambda: open_folder(config.plugin_dir_path)
+            )
+            self.open_plug_folder_btn.grid(column=1, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=cur_row)
+
+            # Browse Button
+            text = tr.tl('Browse...')  # LANG: NOT-macOS Settings - files location selection button
+            self.plugbutton = ttk.Button(
+                plugins_frame,
+                text=text,
+                # LANG: Selecting the Location of the Plugin Directory on the Filesystem
+                command=lambda: self.filebrowse(tr.tl('Plugin Directory Location'), self.plugdir)
+            )
+            self.plugbutton.grid(column=2, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=cur_row)
+
+            if config.default_journal_dir_path:
+                # Appearance theme and language setting
+                ttk.Button(
+                    plugins_frame,
+                    # LANG: Settings > Configuration - Label on 'reset journal files location to default' button
+                    text=tr.tl('Default'),
+                    command=self.plugdir_reset,
+                    state=tk.NORMAL if config.get_str('plugin_dir') else tk.DISABLED
+                ).grid(column=3, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=cur_row)
+
+        # Initialize plugin management variables
+        self.plugin_vars = {}
+        self.active_plugins_frame = None
+        self.disabled_plugins_frame = None
+        
+        # Create the plugin sections
+        self._create_plugin_sections(plugins_frame, row)
+
+        ############################################################
+        # Show plugins that failed to load
+        ############################################################
+        if plug.PLUGINS_broken:
+            ttk.Separator(plugins_frame, orient=tk.HORIZONTAL).grid(
+                columnspan=3, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
+            )
+            # LANG: Plugins - Label for list of 'broken' plugins that failed to load
+            nb.Label(plugins_frame, text=tr.tl('Broken Plugins')+':').grid(
+                padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get()
+            )
+
+            for plugin in plug.PLUGINS_broken:
+                if plugin.folder:  # 'system' ones have this set to None to suppress listing in Plugins prefs tab
+                    nb.Label(plugins_frame, text=plugin.name).grid(
+                        columnspan=2, padx=self.LISTX, pady=self.PADY, sticky=tk.W, row=row.get()
+                    )
+
+        # LANG: Label on Settings > Plugins tab
+        notebook.add(plugins_frame, text=tr.tl('Plugins'))		# Tab heading in settings
+
+        ############################################################
+        # Show which plugins don't have Python 3.x support
+        ############################################################
+        if plug.PLUGINS_not_py3:
+            ttk.Separator(plugins_frame, orient=tk.HORIZONTAL).grid(
+                columnspan=3, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
+            )
+            # LANG: Plugins - Label for list of 'enabled' plugins that don't work with Python 3.x
+            nb.Label(plugins_frame, text=tr.tl('Plugins Without Python 3.x Support')+':').grid(
+                padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get()
+            )
+
+            HyperlinkLabel(
+                # LANG: Plugins - Label on URL to documentation about migrating plugins from Python 2.7
+                plugins_frame, text=tr.tl('Information on migrating plugins'),
+                background=nb.Label().cget('background'),
+                url='https://github.com/EDCD/EDMarketConnector/blob/main/PLUGINS.md#migration-from-python-27',
+                underline=True
+            ).grid(columnspan=2, padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
+
+            for plugin in plug.PLUGINS_not_py3:
+                if plugin.folder:  # 'system' ones have this set to None to suppress listing in Plugins prefs tab
+                    nb.Label(plugins_frame, text=plugin.name).grid(
+                        columnspan=2, padx=self.LISTX, pady=self.PADY, sticky=tk.W, row=row.get()
+                    )
+
+    def _create_plugin_sections(self, plugins_frame, row):
+        """Create the enabled and disabled plugin sections."""
+        # Get all plugins and categorize them
+        enabled_plugins, disabled_plugins = self._categorize_plugins()
+        
+        # Create enabled plugins section (always show, even if empty)
+        ttk.Separator(plugins_frame, orient=tk.HORIZONTAL).grid(
+            columnspan=4, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
+        )
+        
+        nb.Label(
+            plugins_frame,
+            text=tr.tl('Enabled Plugins')+':'
+        ).grid(padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
+        
+        # Create frame for enabled plugins
+        self.active_plugins_frame = ttk.Frame(plugins_frame)
+        self.active_plugins_frame.grid(columnspan=4, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=row.get())
+        
+        if enabled_plugins:
+            self._populate_plugin_section(self.active_plugins_frame, enabled_plugins, True)
+        else:
+            # Show empty message when no enabled plugins
+            empty_label = ttk.Label(
+                self.active_plugins_frame,
+                text=tr.tl("No enabled plugins")
+            )
+            empty_label.grid(padx=self.PADX, pady=self.PADY, sticky=tk.W)
+        
+        # Instructions for enabled plugins
+        nb.Label(
+            plugins_frame,
+            text=tr.tl("Use ↑↓ buttons to reorder plugins. Uncheck to disable.")
+        ).grid(columnspan=4, padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
+
+        # Create disabled plugins section (always show, even if empty)
+        ttk.Separator(plugins_frame, orient=tk.HORIZONTAL).grid(
+            columnspan=4, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
+        )
+
+        nb.Label(
+            plugins_frame,
+            text=tr.tl('Disabled Plugins')+':'
+        ).grid(padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
+
+        # Create frame for disabled plugins
+        self.disabled_plugins_frame = ttk.Frame(plugins_frame)
+        self.disabled_plugins_frame.grid(columnspan=4, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=row.get())
+
+        if disabled_plugins:
+            self._populate_plugin_section(self.disabled_plugins_frame, disabled_plugins, False)
+        else:
+            # Show empty message when no disabled plugins
+            empty_label = ttk.Label(
+                self.disabled_plugins_frame,
+                text=tr.tl("No disabled plugins")
+            )
+            empty_label.grid(padx=self.PADX, pady=self.PADY, sticky=tk.W)
+
+    def _categorize_plugins(self):
+        """Categorize plugins into enabled and disabled lists."""
+        enabled_plugins = []
+        disabled_plugins = []
+        
+        # Get plugins from plug.PLUGINS that have folders and modules (enabled)
+        for plugin in plug.PLUGINS:
+            if plugin.folder and plugin.module:
+                plugin_path = config.plugin_dir_path / plugin.folder
+                disabled_path = config.plugin_dir_path / f"{plugin.folder}.disabled"
+                if plugin_path.exists() and not disabled_path.exists():
+                    enabled_plugins.append(plugin)
+        
+        # Get disabled plugins from plug.PLUGINS
+        for plugin in plug.PLUGINS:
+            if plugin.folder and not plugin.module:
+                disabled_plugins.append(plugin)
+        
+        # Also check for .disabled folders that might not be in PLUGINS list
+        if config.plugin_dir_path.exists():
+            for plugin_dir in config.plugin_dir_path.iterdir():
+                if plugin_dir.is_dir() and not plugin_dir.name.startswith(('.', '_')):
+                    if plugin_dir.name.endswith('.disabled'):
+                        plugin_name = plugin_dir.name[:-9]  # Remove .disabled
+                        # Check if it's not already in our disabled_plugins list
+                        if not any(p.folder == plugin_name for p in disabled_plugins):
+                            # Create a disabled plugin entry
+                            disabled_plugin = plug.Plugin(plugin_name, None, None)
+                            disabled_plugin.folder = plugin_name
+                            disabled_plugins.append(disabled_plugin)
+        
+        return enabled_plugins, disabled_plugins
+
+    def _populate_plugin_section(self, parent_frame, plugins, is_enabled):
+        """Populate a plugin section with plugin widgets."""
+        # Create a canvas with scrollbar for the plugin list
+        canvas = tk.Canvas(parent_frame, height=200)
+        scrollbar = ttk.Scrollbar(parent_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Store plugin widgets for management
+        if is_enabled:
+            self.enabled_plugin_widgets = []
+        else:
+            self.disabled_plugin_widgets = []
+        
+        # Load saved plugin order for enabled plugins
+        if is_enabled:
+            saved_order = config.get_list('plugin_order', default=[])
+            if saved_order:
+                ordered_plugins = []
+                for plugin_name in saved_order:
+                    for plugin in plugins:
+                        if plugin.name == plugin_name:
+                            ordered_plugins.append(plugin)
+                            break
+                # Add any plugins not in saved order
+                for plugin in plugins:
+                    if plugin.name not in saved_order:
+                        ordered_plugins.append(plugin)
+                plugins = ordered_plugins
+        
+        for i, plugin in enumerate(plugins):
+            # Create frame for each plugin
+            plugin_frame = ttk.Frame(scrollable_frame)
+            plugin_frame.grid(row=i, column=0, sticky=tk.EW, padx=5, pady=2)
+            plugin_frame.columnconfigure(1, weight=1)
+            
+            # Checkbox for enabling/disabling plugin
+            var = tk.BooleanVar(value=is_enabled)
+            self.plugin_vars[plugin.name] = var
+            checkbox = ttk.Checkbutton(
+                plugin_frame,
+                variable=var,
+                command=lambda p=plugin: self.toggle_plugin(p)
+            )
+            checkbox.grid(row=0, column=0, padx=(0, 5))
+            
+            # Plugin name label with status indicator
+            status_text = "✓" if is_enabled else "✗"
+            label_text = f"{status_text} {plugin.name if plugin.name == plugin.folder else f'{plugin.folder} ({plugin.name})'}"
+            label = ttk.Label(
+                plugin_frame,
+                text=label_text,
+                foreground="green" if is_enabled else "red"
+            )
+            label.grid(row=0, column=1, sticky=tk.W)
+            
+            # Create widget info
+            widget_info = {
+                'frame': plugin_frame,
+                'plugin': plugin,
+                'label': label,
+                'checkbox': checkbox,
+                'enabled': is_enabled,
+                'index': i
+            }
+            
+            # Add reorder buttons only for enabled plugins
+            if is_enabled:
+                button_frame = ttk.Frame(plugin_frame)
+                button_frame.grid(row=0, column=2, padx=(5, 0))
+                
+                # Up button
+                up_button = ttk.Button(
+                    button_frame,
+                    text="↑",
+                    width=3,
+                    command=lambda p=plugin, idx=i: self.move_plugin_up(p, idx)
+                )
+                up_button.grid(row=0, column=0, padx=(0, 2))
+                
+                # Down button
+                down_button = ttk.Button(
+                    button_frame,
+                    text="↓",
+                    width=3,
+                    command=lambda p=plugin, idx=i: self.move_plugin_down(p, idx)
+                )
+                down_button.grid(row=0, column=1, padx=(2, 0))
+                
+                widget_info['up_button'] = up_button
+                widget_info['down_button'] = down_button
+                
+                self.enabled_plugin_widgets.append(widget_info)
+            else:
+                self.disabled_plugin_widgets.append(widget_info)
+        
+        # Pack canvas and scrollbar
+        canvas.grid(row=0, column=0, sticky=tk.NSEW)
+        scrollbar.grid(row=0, column=1, sticky=tk.NS)
+        parent_frame.columnconfigure(0, weight=1)
+        parent_frame.rowconfigure(0, weight=1)
+        
+        # Refresh button states for enabled plugins
+        if is_enabled and hasattr(self, 'enabled_plugin_widgets'):
+            self._refresh_plugin_buttons()
+
+    def toggle_plugin(self, plugin):
+        """Toggle plugin enabled/disabled state and move between sections."""
+        if hasattr(self, 'plugin_vars') and plugin.name in self.plugin_vars:
+            enabled = self.plugin_vars[plugin.name].get()
+            
+            try:
+                plugin_path = config.plugin_dir_path / plugin.folder
+                disabled_path = config.plugin_dir_path / f"{plugin.folder}.disabled"
+                
+                if enabled:
+                    # Enable plugin - rename from .disabled to normal
+                    if disabled_path.exists():
+                        disabled_path.rename(plugin_path)
+                        logger.info(f"Enabled plugin: {plugin.name}")
+                    elif not plugin_path.exists():
+                        # Plugin folder doesn't exist in either form
+                        logger.warning(f"Plugin folder not found: {plugin.folder}")
+                        self.plugin_vars[plugin.name].set(False)
+                        return
+                else:
+                    # Disable plugin - rename to .disabled
+                    if plugin_path.exists():
+                        plugin_path.rename(disabled_path)
+                        logger.info(f"Disabled plugin: {plugin.name}")
+                    elif not disabled_path.exists():
+                        # Plugin folder doesn't exist in either form
+                        logger.warning(f"Plugin folder not found: {plugin.folder}")
+                        self.plugin_vars[plugin.name].set(True)
+                        return
+                
+                # Schedule a refresh of the plugin sections
+                self.after(100, lambda: self._refresh_plugin_sections())
+                
+            except Exception as e:
+                logger.error(f"Failed to toggle plugin {plugin.name}: {e}")
+                # Revert checkbox state on error
+                self.plugin_vars[plugin.name].set(not enabled)
+
+    def _refresh_plugin_sections(self):
+        """Refresh both plugin sections after a plugin state change."""
+        # Clear existing widgets
+        if self.active_plugins_frame:
+            for widget in self.active_plugins_frame.winfo_children():
+                widget.destroy()
+        if self.disabled_plugins_frame:
+            for widget in self.disabled_plugins_frame.winfo_children():
+                widget.destroy()
+        
+        # Re-categorize and repopulate
+        enabled_plugins, disabled_plugins = self._categorize_plugins()
+        
+        if self.active_plugins_frame:
+            if enabled_plugins:
+                self._populate_plugin_section(self.active_plugins_frame, enabled_plugins, True)
+            else:
+                # Show empty message when no enabled plugins
+                empty_label = ttk.Label(
+                    self.active_plugins_frame,
+                    text=tr.tl("No enabled plugins")
+                )
+                empty_label.grid(padx=self.PADX, pady=self.PADY, sticky=tk.W)
+        
+        if self.disabled_plugins_frame:
+            if disabled_plugins:
+                self._populate_plugin_section(self.disabled_plugins_frame, disabled_plugins, False)
+            else:
+                # Show empty message when no disabled plugins
+                empty_label = ttk.Label(
+                    self.disabled_plugins_frame,
+                    text=tr.tl("No disabled plugins")
+                )
+                empty_label.grid(padx=self.PADX, pady=self.PADY, sticky=tk.W)
+
+    def move_plugin_up(self, plugin, current_index):
+        """Move a plugin up in the order."""
+        if hasattr(self, 'enabled_plugin_widgets') and current_index > 0:
+            # Find the actual current index in case it's changed
+            actual_index = self._find_plugin_index(plugin)
+            if actual_index is not None and actual_index > 0:
+                self.swap_plugins(actual_index, actual_index - 1)
+                self.update_plugin_order()
+                self._refresh_plugin_buttons()
+
+    def move_plugin_down(self, plugin, current_index):
+        """Move a plugin down in the order."""
+        if hasattr(self, 'enabled_plugin_widgets'):
+            # Find the actual current index in case it's changed
+            actual_index = self._find_plugin_index(plugin)
+            if actual_index is not None and actual_index < len(self.enabled_plugin_widgets) - 1:
+                self.swap_plugins(actual_index, actual_index + 1)
+                self.update_plugin_order()
+                self._refresh_plugin_buttons()
+
+    def _find_plugin_index(self, plugin):
+        """Find the current index of a plugin in the enabled widget list."""
+        if hasattr(self, 'enabled_plugin_widgets'):
+            for i, widget_info in enumerate(self.enabled_plugin_widgets):
+                if widget_info['plugin'].name == plugin.name:
+                    return i
+        return None
+
+    def swap_plugins(self, index1, index2):
+        """Swap two plugins in the list and update their visual positions."""
+        if (hasattr(self, 'enabled_plugin_widgets') and 
+            0 <= index1 < len(self.enabled_plugin_widgets) and 
+            0 <= index2 < len(self.enabled_plugin_widgets)):
+            
+            # Swap in the list
+            self.enabled_plugin_widgets[index1], self.enabled_plugin_widgets[index2] = (
+                self.enabled_plugin_widgets[index2], self.enabled_plugin_widgets[index1]
+            )
+            
+            # Update visual positions by regridding both frames
+            self.enabled_plugin_widgets[index1]['frame'].grid_configure(row=index1)
+            self.enabled_plugin_widgets[index2]['frame'].grid_configure(row=index2)
+            
+            # Update stored indices
+            self.enabled_plugin_widgets[index1]['index'] = index1
+            self.enabled_plugin_widgets[index2]['index'] = index2
+
+    def _refresh_plugin_buttons(self):
+        """Refresh all plugin button commands and states after reordering."""
+        if hasattr(self, 'enabled_plugin_widgets'):
+            for i, widget_info in enumerate(self.enabled_plugin_widgets):
+                plugin = widget_info['plugin']
+                
+                # Update button commands with current index
+                if 'up_button' in widget_info:
+                    widget_info['up_button'].configure(
+                        command=lambda p=plugin, idx=i: self.move_plugin_up(p, idx),
+                        state=tk.NORMAL if i > 0 else tk.DISABLED
+                    )
+                if 'down_button' in widget_info:
+                    widget_info['down_button'].configure(
+                        command=lambda p=plugin, idx=i: self.move_plugin_down(p, idx),
+                        state=tk.NORMAL if i < len(self.enabled_plugin_widgets) - 1 else tk.DISABLED
+                    )
+                
+                # Update stored index
+                widget_info['index'] = i
+
+    def update_plugin_order(self):
+        """Update the plugin order based on current widget list order."""
+        if hasattr(self, 'enabled_plugin_widgets'):
+            # Get plugin names in current order
+            plugin_names = [widget_info['plugin'].name for widget_info in self.enabled_plugin_widgets]
+            
+            # Save the new order
+            config.set('plugin_order', plugin_names)
+            logger.info(f"Updated plugin order: {plugin_names}")
+
     def __setup_plugin_tabs(self, notebook: ttk.Notebook) -> None:
         for plugin in plug.PLUGINS:
             plugin_frame = plugin.get_prefs(notebook, monitor.cmdr, monitor.is_beta)
@@ -925,139 +1387,6 @@ class PreferencesDialog(tk.Toplevel):
 
         # LANG: Label for Settings > Appearance tab
         notebook.add(appearance_frame, text=tr.tl('Appearance'))  # Tab heading in settings
-
-    def __setup_plugin_tab(self, notebook: ttk.Notebook) -> None:  # noqa: CCR001
-        # Plugin settings and info
-        plugins_frame = nb.Frame(notebook)
-        plugins_frame.columnconfigure(0, weight=1)
-        row = AutoInc(start=0)
-        self.plugdir = tk.StringVar()
-        self.plugdir.set(str(config.get_str('plugin_dir')))
-        # LANG: Label for location of third-party plugins folder
-        self.plugdir_label = nb.Label(plugins_frame, text=tr.tl('Plugins folder') + ':')
-        self.plugdir_label.grid(padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
-        self.plugdir_entry = ttk.Entry(plugins_frame, takefocus=False,
-                                       textvariable=self.plugdir)  # Link StringVar to Entry widget
-        self.plugdir_entry.grid(columnspan=4, padx=self.PADX, pady=self.BOXY, sticky=tk.EW, row=row.get())
-        with row as cur_row:
-            nb.Label(
-                plugins_frame,
-                # Help text in settings
-                # LANG: Tip/label about how to disable plugins
-                text=tr.tl(
-                    "Tip: You can disable a plugin by{CR}adding '{EXT}' to its folder name").format(EXT='.disabled')
-            ).grid(columnspan=1, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=cur_row)
-
-            # Open Plugin Folder Button
-            self.open_plug_folder_btn = ttk.Button(
-                plugins_frame,
-                # LANG: Label on button used to open the Plugin Folder
-                text=tr.tl('Open Plugins Folder'),
-                command=lambda: open_folder(config.plugin_dir_path)
-            )
-            self.open_plug_folder_btn.grid(column=1, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=cur_row)
-
-            # Browse Button
-            text = tr.tl('Browse...')  # LANG: NOT-macOS Settings - files location selection button
-            self.plugbutton = ttk.Button(
-                plugins_frame,
-                text=text,
-                # LANG: Selecting the Location of the Plugin Directory on the Filesystem
-                command=lambda: self.filebrowse(tr.tl('Plugin Directory Location'), self.plugdir)
-            )
-            self.plugbutton.grid(column=2, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=cur_row)
-
-            if config.default_journal_dir_path:
-                # Appearance theme and language setting
-                ttk.Button(
-                    plugins_frame,
-                    # LANG: Settings > Configuration - Label on 'reset journal files location to default' button
-                    text=tr.tl('Default'),
-                    command=self.plugdir_reset,
-                    state=tk.NORMAL if config.get_str('plugin_dir') else tk.DISABLED
-                ).grid(column=3, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=cur_row)
-
-        enabled_plugins = list(filter(lambda x: x.folder and x.module, plug.PLUGINS))
-        if enabled_plugins:
-            ttk.Separator(plugins_frame, orient=tk.HORIZONTAL).grid(
-                columnspan=4, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
-            )
-            nb.Label(
-                plugins_frame,
-                # LANG: Label on list of enabled plugins
-                text=tr.tl('Enabled Plugins')+':'  # List of plugins in settings
-            ).grid(padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
-
-            for plugin in enabled_plugins:
-                label = nb.Label(plugins_frame,
-                                 text=plugin.name if plugin.name == plugin.folder
-                                 else f'{plugin.folder} ({plugin.name})')
-
-                label.grid(columnspan=2, padx=self.LISTX, pady=self.PADY, sticky=tk.W, row=row.get())
-
-        ############################################################
-        # Show which plugins don't have Python 3.x support
-        ############################################################
-        if plug.PLUGINS_not_py3:
-            ttk.Separator(plugins_frame, orient=tk.HORIZONTAL).grid(
-                columnspan=3, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
-            )
-            # LANG: Plugins - Label for list of 'enabled' plugins that don't work with Python 3.x
-            nb.Label(plugins_frame, text=tr.tl('Plugins Without Python 3.x Support')+':').grid(
-                padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get()
-            )
-
-            HyperlinkLabel(
-                # LANG: Plugins - Label on URL to documentation about migrating plugins from Python 2.7
-                plugins_frame, text=tr.tl('Information on migrating plugins'),
-                background=nb.Label().cget('background'),
-                url='https://github.com/EDCD/EDMarketConnector/blob/main/PLUGINS.md#migration-from-python-27',
-                underline=True
-            ).grid(columnspan=2, padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
-
-            for plugin in plug.PLUGINS_not_py3:
-                if plugin.folder:  # 'system' ones have this set to None to suppress listing in Plugins prefs tab
-                    nb.Label(plugins_frame, text=plugin.name).grid(
-                        columnspan=2, padx=self.LISTX, pady=self.PADY, sticky=tk.W, row=row.get()
-                    )
-        ############################################################
-        # Show disabled plugins
-        ############################################################
-        disabled_plugins = list(filter(lambda x: x.folder and not x.module, plug.PLUGINS))
-        if disabled_plugins:
-            ttk.Separator(plugins_frame, orient=tk.HORIZONTAL).grid(
-                columnspan=3, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
-            )
-            nb.Label(
-                plugins_frame,
-                # LANG: Label on list of user-disabled plugins
-                text=tr.tl('Disabled Plugins')+':'  # List of plugins in settings
-            ).grid(padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
-
-            for plugin in disabled_plugins:
-                nb.Label(plugins_frame, text=plugin.name).grid(
-                    columnspan=2, padx=self.LISTX, pady=self.PADY, sticky=tk.W, row=row.get()
-                )
-        ############################################################
-        # Show plugins that failed to load
-        ############################################################
-        if plug.PLUGINS_broken:
-            ttk.Separator(plugins_frame, orient=tk.HORIZONTAL).grid(
-                columnspan=3, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
-            )
-            # LANG: Plugins - Label for list of 'broken' plugins that failed to load
-            nb.Label(plugins_frame, text=tr.tl('Broken Plugins')+':').grid(
-                padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get()
-            )
-
-            for plugin in plug.PLUGINS_broken:
-                if plugin.folder:  # 'system' ones have this set to None to suppress listing in Plugins prefs tab
-                    nb.Label(plugins_frame, text=plugin.name).grid(
-                        columnspan=2, padx=self.LISTX, pady=self.PADY, sticky=tk.W, row=row.get()
-                    )
-
-        # LANG: Label on Settings > Plugins tab
-        notebook.add(plugins_frame, text=tr.tl('Plugins'))		# Tab heading in settings
 
     def cmdrchanged(self, event=None):
         """

@@ -150,18 +150,36 @@ class Plugin:
         return None
 
 
+def sort_plugins_by_order(plugins_list):
+    """Sort plugins according to saved order."""
+    saved_order = config.get_list('plugin_order', default=[])
+    if not saved_order:
+        return plugins_list
+    
+    # Create a mapping of plugin names to their saved order
+    order_map = {name: index for index, name in enumerate(saved_order)}
+    
+    # Sort plugins based on saved order, with unsaved plugins at the end
+    def sort_key(plugin):
+        return order_map.get(plugin.name, len(saved_order))
+    
+    return sorted(plugins_list, key=sort_key)
+
+
 def load_plugins(master: tk.Tk) -> None:
     """Find and load all plugins."""
     last_error.root = master
 
     internal = _load_internal_plugins()
-    PLUGINS.extend(sorted(internal, key=lambda p: operator.attrgetter('name')(p).lower()))
+    internal = sort_plugins_by_order(internal)
+    PLUGINS.extend(internal)
 
     # Add plugin folder to load path so packages can be loaded from plugin folder
     sys.path.append(config.plugin_dir)
 
     found = _load_found_plugins()
-    PLUGINS.extend(sorted(found, key=lambda p: operator.attrgetter('name')(p).lower()))
+    found = sort_plugins_by_order(found)
+    PLUGINS.extend(found)
 
 
 def _load_internal_plugins():
