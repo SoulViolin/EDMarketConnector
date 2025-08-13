@@ -688,6 +688,52 @@ class PreferencesDialog(tk.Toplevel):
                 command=lambda: open_folder(self.logfile_loc)
             ).grid(column=2, padx=self.PADX, pady=0, sticky=tk.NSEW, row=cur_row)
 
+        # Visibility settings for main UI sections
+        ttk.Separator(config_frame, orient=tk.HORIZONTAL).grid(
+            columnspan=4, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
+        )
+
+        nb.Label(
+            config_frame,
+            text=tr.tl('Main UI sections visibility')
+        ).grid(columnspan=4, padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
+
+        self.hide_cmdr = tk.BooleanVar(value=config.get_bool('ui_hide_cmdr', default=False))
+        self.hide_ship = tk.BooleanVar(value=config.get_bool('ui_hide_ship', default=False))
+        self.hide_suit = tk.BooleanVar(value=config.get_bool('ui_hide_suit', default=False))
+        self.hide_system = tk.BooleanVar(value=config.get_bool('ui_hide_system', default=False))
+        self.hide_station = tk.BooleanVar(value=config.get_bool('ui_hide_station', default=False))
+
+        nb.Checkbutton(
+            config_frame,
+            text=tr.tl('Hide Cmdr row'),
+            variable=self.hide_cmdr
+        ).grid(columnspan=4, padx=self.BUTTONX, pady=self.PADY, sticky=tk.W, row=row.get())
+
+        nb.Checkbutton(
+            config_frame,
+            text=tr.tl('Hide Ship row'),
+            variable=self.hide_ship
+        ).grid(columnspan=4, padx=self.BUTTONX, pady=self.PADY, sticky=tk.W, row=row.get())
+
+        nb.Checkbutton(
+            config_frame,
+            text=tr.tl('Hide Suit row'),
+            variable=self.hide_suit
+        ).grid(columnspan=4, padx=self.BUTTONX, pady=self.PADY, sticky=tk.W, row=row.get())
+
+        nb.Checkbutton(
+            config_frame,
+            text=tr.tl('Hide System row'),
+            variable=self.hide_system
+        ).grid(columnspan=4, padx=self.BUTTONX, pady=self.PADY, sticky=tk.W, row=row.get())
+
+        nb.Checkbutton(
+            config_frame,
+            text=tr.tl('Hide Station row'),
+            variable=self.hide_station
+        ).grid(columnspan=4, padx=self.BUTTONX, pady=self.PADY, sticky=tk.W, row=row.get())
+
         # Big spacer
         nb.Label(config_frame).grid(sticky=tk.W, row=row.get())
 
@@ -1288,6 +1334,18 @@ class PreferencesDialog(tk.Toplevel):
         # Privacy options
         config.set('hide_private_group', self.hide_private_group.get())
         config.set('hide_multicrew_captain', self.hide_multicrew_captain.get())
+
+        # Main UI visibility
+        if hasattr(self, 'hide_cmdr'):
+            config.set('ui_hide_cmdr', self.hide_cmdr.get())
+        if hasattr(self, 'hide_ship'):
+            config.set('ui_hide_ship', self.hide_ship.get())
+        if hasattr(self, 'hide_suit'):
+            config.set('ui_hide_suit', self.hide_suit.get())
+        if hasattr(self, 'hide_system'):
+            config.set('ui_hide_system', self.hide_system.get())
+        if hasattr(self, 'hide_station'):
+            config.set('ui_hide_station', self.hide_station.get())
 
         config.set('ui_scale', self.ui_scale.get())
         config.set('ui_transparency', self.transparency.get())

@@ -486,6 +486,7 @@ class AppWindow:
             data='#define im_width 16\n#define im_height 16\nstatic unsigned char im_bits[] = {\n   0x00, 0x00, 0x00, 0x00, 0x0c, 0x30, 0x1c, 0x38, 0x38, 0x1c, 0x70, 0x0e,\n   0xe0, 0x07, 0xc0, 0x03, 0xc0, 0x03, 0xe0, 0x07, 0x70, 0x0e, 0x38, 0x1c,\n   0x1c, 0x38, 0x0c, 0x30, 0x00, 0x00, 0x00, 0x00 };\n')  # noqa: E501
 
         frame = tk.Frame(self.w, name=appname.lower())
+        self.main_info_frame = frame
         frame.grid(sticky=tk.NSEW)
         frame.columnconfigure(1, weight=1)
 
@@ -526,6 +527,9 @@ class AppWindow:
         self.station_label.grid(row=ui_row, column=0, sticky=tk.W)
         self.station.grid(row=ui_row, column=1, sticky=tk.EW)
         ui_row += 1
+
+        # Apply initial visibility from config
+        self.apply_main_info_visibility()
 
         plugin_no = 0
         for plugin in plug.PLUGINS:
@@ -783,6 +787,14 @@ class AppWindow:
 
     def suit_show_if_set(self) -> None:
         """Show UI Suit row if we have data, else hide."""
+        # Respect user visibility preference
+        if config.get_bool('ui_hide_suit', default=False):
+            try:
+                self.suit_label.grid_remove()
+                self.suit.grid_remove()
+            except Exception:
+                pass
+            return
         self.toggle_suit_row(self.suit['text'] != '')
 
     def toggle_suit_row(self, visible: bool | None = None) -> None:
@@ -806,6 +818,74 @@ class AppWindow:
             self.suit.grid_forget()
             self.suit_shown = False
 
+    def _grid_set_visible(self, widget: tk.Widget, visible: bool) -> None:
+        """Helper to show/hide a widget created with grid() without destroying it."""
+        if visible:
+            # If it already has grid info, do nothing; caller ensures positioning
+            try:
+                info = widget.grid_info()
+                if info:
+                    return
+            except Exception:
+                pass
+        try:
+            if visible:
+                # Re-grid at last known position if possible (labels are set once in __init__)
+                # Fallback: do nothing here; initialization code places them.
+                pass
+            else:
+                widget.grid_remove()
+        except Exception:
+            # Safety: ignore if widget is already removed
+            pass
+
+    def apply_main_info_visibility(self) -> None:
+        """Show/hide main info rows and entire block per configuration flags."""
+        hide_cmdr = config.get_bool('ui_hide_cmdr', default=False)
+        hide_ship = config.get_bool('ui_hide_ship', default=False)
+        hide_suit = config.get_bool('ui_hide_suit', default=False)
+        hide_system = config.get_bool('ui_hide_system', default=False)
+        hide_station = config.get_bool('ui_hide_station', default=False)
+
+        # Control row visibility
+        if hide_cmdr:
+            self.cmdr_label.grid_remove()
+            self.cmdr.grid_remove()
+        else:
+            self.cmdr_label.grid()
+            self.cmdr.grid()
+
+        if hide_ship:
+            self.ship_label.grid_remove()
+            self.ship.grid_remove()
+        else:
+            self.ship_label.grid()
+            self.ship.grid()
+
+        # Suit uses a dedicated toggle, respect both data visibility and setting
+        if hide_suit:
+            self.suit_label.grid_remove()
+            self.suit.grid_remove()
+        else:
+            # Ensure suit row visibility still depends on having data
+            self.suit_show_if_set()
+
+        if hide_system:
+            self.system_label.grid_remove()
+            self.system.grid_remove()
+        else:
+            self.system_label.grid()
+            self.system.grid()
+
+        if hide_station:
+            self.station_label.grid_remove()
+            self.station.grid_remove()
+        else:
+            self.station_label.grid()
+            self.station.grid()
+
+        # If all are hidden, the block will not occupy space because each row is removed.
+
     def postprefs(self, dologin: bool = True, **postargs):
         """Perform necessary actions after the Preferences dialog is applied."""
         self.prefsdialog = None
@@ -818,6 +898,9 @@ class AppWindow:
 
         # (Re-)install hotkey monitoring
         hotkeymgr.register(self.w, config.get_int('hotkey_code'), config.get_int('hotkey_mods'))
+        
+        # Re-apply visibility settings after preferences change
+        self.apply_main_info_visibility()
 
         # Update Journal lock if needs be.
         journal_lock.update_lock(self.w)
