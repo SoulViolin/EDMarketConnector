@@ -489,6 +489,15 @@ class PreferencesDialog(tk.Toplevel):
 
         self._populate_detach_controls(plugins_frame, row)
 
+        # Visual manager for plugin windows
+        ctrl2 = ttk.Frame(plugins_frame)
+        ctrl2.grid(columnspan=4, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=row.get())
+        ttk.Button(
+            ctrl2,
+            text=tr.tl('Open plugin windows manager'),
+            command=self._open_plugin_windows_manager
+        ).grid(row=0, column=0)
+
         ############################################################
         # Show plugins that failed to load
         ############################################################
@@ -619,6 +628,18 @@ class PreferencesDialog(tk.Toplevel):
             return
         try:
             app.create_plugin_window()
+        except Exception:
+            pass
+
+    def _open_plugin_windows_manager(self):
+        app = ui_bridge.get_app_window()
+        if not app:
+            return
+        try:
+            if hasattr(app, '_ensure_pwm'):
+                app._ensure_pwm()
+            if hasattr(app, '_pwm'):
+                app._pwm.open_manager_dialog(self)
         except Exception:
             pass
 

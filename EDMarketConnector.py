@@ -420,6 +420,7 @@ from l10n import translations as tr
 from monitor import monitor
 from theme import theme
 from ttkHyperlinkLabel import HyperlinkLabel, SHIPYARD_HTML_TEMPLATE
+from plugin_window_manager import PluginWindowManager
 import ui_bridge
 import json
 
@@ -1126,127 +1127,40 @@ class AppWindow:
             logger.warning("Trying to start minimized")
             self.oniconify() if root.overrideredirect() else self.w.wm_iconify()
 
+    def _ensure_pwm(self) -> None:
+        if not hasattr(self, '_pwm'):
+            # Create manager lazily to avoid ordering issues during startup
+            self._pwm = PluginWindowManager(self, lambda: PluginWindow(self))
+
     def create_plugin_window(self):
         """Create and register an empty plugin window."""
-        win = PluginWindow(self)
-        self._plugin_windows.append(win)
-        return win
+        self._ensure_pwm()
+        return self._pwm.create_window()
 
     def apply_theme_to_all_windows(self):
         """Re-apply theme to all plugin windows (used after theme change)."""
-        self.synchronizing_windows = True
-        try:
-            for win in list(getattr(self, '_plugin_windows', [])):
-                try:
-                    win.apply_theme()
-                except Exception:
-                    pass
-        finally:
-            self.synchronizing_windows = False
+        self._ensure_pwm()
+        self._pwm.apply_theme_to_all()
 
     def minimize_all_plugin_windows(self, to_tray: bool = False) -> None:
-        """Minimize or hide all plugin windows to follow main window state.
-        If to_tray is True, windows are withdrawn (hidden). Otherwise they are iconified.
-        """
-        for win in list(getattr(self, '_plugin_windows', [])):
-            try:
-                if to_tray:
-                    win.w.withdraw()
-                else:
-                    win.w.iconify()
-            except Exception:
-                pass
+        """Minimize or hide all plugin windows to follow main window state."""
+        self._ensure_pwm()
+        self._pwm.minimize_all(to_tray=to_tray)
 
     def restore_all_plugin_windows(self) -> None:
         """Restore (deiconify) all plugin windows to follow main window restore."""
-        for win in list(getattr(self, '_plugin_windows', [])):
-            try:
-                win.w.deiconify()
-            except Exception:
-                pass
+        self._ensure_pwm()
+        self._pwm.restore_all()
 
     def save_plugin_layout(self) -> None:
         """Persist positions of plugin windows and plugin-to-host assignments."""
-        try:
-            layout = {"windows": [], "assignments": {}}
-
-            # Map window instance to stable id
-            window_id_by_obj: dict[PluginWindow, str] = {}
-            for idx, win in enumerate(getattr(self, '_plugin_windows', []), start=1):
-                wid = f"w{idx}"
-                try:
-                    # geometry format like 'WxH+X+Y' or '+X+Y'
-                    geom = win.w.geometry()
-                    parts = geom.split('+')
-                    if len(parts) >= 3:
-                        x, y = parts[1], parts[2]
-                        geometry = f"+{x}+{y}"
-                    else:
-                        geometry = ''
-                except Exception:
-                    geometry = ''
-                layout["windows"].append({"id": wid, "geometry": geometry})
-                window_id_by_obj[win] = wid
-
-            # Assignments: plugin name -> 'main' or window id
-            for plugin, row in list(getattr(self, '_plugin_rows', {}).items()):
-                try:
-                    host = row.get('host')
-                    if host == 'main':
-                        layout["assignments"][plugin.name] = 'main'
-                    elif isinstance(host, PluginWindow):
-                        wid = window_id_by_obj.get(host)
-                        if wid:
-                            layout["assignments"][plugin.name] = wid
-                except Exception:
-                    pass
-
-            config.set('plugin_layout', json.dumps(layout))
-        except Exception:
-            # Best-effort; don't block shutdown
-            pass
+        self._ensure_pwm()
+        self._pwm.save_layout()
 
     def restore_plugin_layout(self) -> None:
         """Restore plugin windows positions and plugin assignments from config."""
-        try:
-            data_str = config.get_str('plugin_layout')
-            if not data_str:
-                return
-            data = json.loads(data_str)
-
-            windows = data.get('windows') or []
-            assignments: dict = data.get('assignments') or {}
-
-            # Create windows in saved order and set their geometry
-            id_to_window: dict[str, PluginWindow] = {}
-            for win_info in windows:
-                wid = win_info.get('id')
-                if not wid:
-                    continue
-                win = self.create_plugin_window()
-                try:
-                    geom = win_info.get('geometry')
-                    if geom:
-                        win.w.geometry(geom)
-                except Exception:
-                    pass
-                id_to_window[wid] = win
-
-            # Move plugins per assignments
-            for plugin in plug.PLUGINS:
-                try:
-                    target = assignments.get(plugin.name)
-                    if not target or target == 'main':
-                        continue
-                    target_win = id_to_window.get(str(target))
-                    if target_win:
-                        self.move_plugin_to_window(plugin, target_win)
-                except Exception:
-                    # Ignore bad/missing plugins or layout mismatches
-                    pass
-        except Exception:
-            # Ignore malformed data
-            pass
+        self._ensure_pwm()
+        self._pwm.restore_layout()
 
     def minimize_entire_app(self, trigger: str = 'main') -> None:
         """Minimize or hide the whole application (main + plugin windows).
@@ -1281,96 +1195,23 @@ class AppWindow:
 
     def _remove_plugin_from_current_host(self, plugin):
         """Remove plugin UI from wherever it currently resides."""
-        row = self._plugin_rows.get(plugin)
-        if not row:
-            return
-        host = row.get('host')
-        if host == 'main':
-            try:
-                row['frame'].grid_forget()
-                row['frame'].destroy()
-            except Exception:
-                pass
-            try:
-                row['sep'].grid_forget()
-                row['sep'].destroy()
-            except Exception:
-                pass
-            self._plugin_rows.pop(plugin, None)
-        elif isinstance(host, PluginWindow):
-            host.remove_plugin(plugin)
+        self._ensure_pwm()
+        self._pwm._remove_from_current_host(plugin)
 
     def detach_plugin_to_new_window(self, plugin):
         """Detach the plugin to a newly created plugin window."""
-        self._remove_plugin_from_current_host(plugin)
-        win = PluginWindow(self)
-        self._plugin_windows.append(win)
-        try:
-            win.add_plugin(plugin)
-        except Exception as e:
-            logger.debug('Error adding plugin to new window', exc_info=e)
-            # On failure, try to return to main to avoid losing UI
-            self.return_plugin_to_main(plugin)
+        self._ensure_pwm()
+        self._pwm.detach_to_new_window(plugin)
 
     def move_plugin_to_window(self, plugin, target_window):
         """Move plugin UI to an existing plugin window."""
-        if target_window not in self._plugin_windows:
-            return
-        self._remove_plugin_from_current_host(plugin)
-        try:
-            target_window.add_plugin(plugin)
-        except Exception as e:
-            logger.debug('Error moving plugin to window', exc_info=e)
-            self.return_plugin_to_main(plugin)
+        self._ensure_pwm()
+        self._pwm.move_to_window(plugin, target_window)
 
     def return_plugin_to_main(self, plugin):
         """Recreate plugin UI back in the main window area."""
-        # If hosted in a detached window, remove it there first
-        row = self._plugin_rows.get(plugin)
-        if row and row.get('host') != 'main':
-            self._remove_plugin_from_current_host(plugin)
-        # If already hosted in main (or nothing to move), avoid duplication
-        row = self._plugin_rows.get(plugin)
-        if row and row.get('host') == 'main':
-            return
-        # Recreate as in initial layout
-        frame = self._plugins_parent_main
-        plugin_no = sum(1 for r in self._plugin_rows.values() if r.get('host') == 'main')
-        plugin_sep = tk.Frame(frame, highlightthickness=1, name=f"plugin_hr_returned_{plugin_no + 1}")
-        plugin_frame = tk.Frame(frame, name=f"plugin_returned_{plugin_no + 1}")
-
-        appitem = plugin.get_app(plugin_frame)
-        if appitem:
-            plugin_sep.grid(columnspan=2, sticky=tk.EW)
-            ui_row = frame.grid_size()[1]
-            plugin_frame.grid(row=ui_row, columnspan=2, sticky=tk.NSEW)
-            plugin_frame.columnconfigure(1, weight=1)
-            if isinstance(appitem, tuple) and len(appitem) == 2:
-                ui_row = frame.grid_size()[1]
-                appitem[0].grid(row=ui_row, column=0, sticky=tk.W)
-                appitem[1].grid(row=ui_row, column=1, sticky=tk.EW)
-            else:
-                appitem.grid(columnspan=2, sticky=tk.EW)
-
-            for child in plugin_frame.winfo_children():
-                try:
-                    child.grid_configure(padx=self.PADX, pady=(sys.platform != 'win32' or isinstance(child, tk.Frame)) and 2 or 0)
-                except Exception:
-                    pass
-
-            theme.register(plugin_frame)
-            self._plugin_rows[plugin] = {
-                'parent': frame,
-                'sep': plugin_sep,
-                'frame': plugin_frame,
-                'host': 'main',
-            }
-            # Context menu removed; managed via Preferences > Plugins
-
-        else:
-            # If plugin has no UI, drop frames
-            plugin_frame.destroy()
-            plugin_sep.destroy()
+        self._ensure_pwm()
+        self._pwm.return_to_main(plugin)
 
     def update_suit_text(self) -> None:
         """Update the suit text for current type and loadout."""

@@ -42,7 +42,6 @@ if sys.platform == 'win32':
     AddFontResourceEx(str(font_path), FR_PRIVATE, 0)
 
 elif sys.platform == 'linux':
-    # pyright: reportUnboundVariable=false
     XID = c_ulong 	# from X.h: typedef unsigned long XID
     Window = XID
     Atom = c_ulong
@@ -307,11 +306,19 @@ class _Theme:
         if not self.current:
             return  # No need to call this for widgets created in plugin_app()
 
+        # Register the entire subtree and apply the theme recursively
         self.register(widget)
-        self._update_widget(widget)
-        if isinstance(widget, (tk.Frame, ttk.Frame)):
-            for child in widget.winfo_children():
-                self._update_widget(child)
+        self._update_widget_subtree(widget)
+
+    def _update_widget_subtree(self, widget: tk.Widget | tk.BitmapImage) -> None:
+        """Apply the current theme to the entire widget tree starting from widget."""
+        try:
+            self._update_widget(widget)
+            if isinstance(widget, (tk.Frame, ttk.Frame)):
+                for child in widget.winfo_children():
+                    self._update_widget_subtree(child)
+        except Exception:
+            logger.exception(f'Failed updating widget subtree: {widget=}')
 
     # Apply current theme to a single widget
     def _update_widget(self, widget: tk.Widget | tk.BitmapImage) -> None:  # noqa: CCR001, C901
