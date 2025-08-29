@@ -796,10 +796,10 @@ class PreferencesDialog(tk.Toplevel):
                     text=tr.tl('Detach'),
                     command=lambda p=plugin: ui_bridge.detach_plugin(p)
                 ).grid(row=0, column=0)
-                move_btn = tk.Menubutton(ctrl_frame, text=tr.tl('Move'))
-                move_menu = tk.Menu(move_btn, tearoff=tk.FALSE)
-                # Populate dynamically on click
-                def refresh_menu(m=move_menu, p=plugin):
+                move_btn = ttk.Button(ctrl_frame, text=tr.tl('Move'))
+                move_menu = tk.Menu(self, tearoff=tk.FALSE)
+                # Populate and show menu on click
+                def show_move_menu(btn=move_btn, m=move_menu, p=plugin):
                     m.delete(0, tk.END)
                     count = ui_bridge.get_plugin_windows_count()
                     if count == 0:
@@ -810,8 +810,16 @@ class PreferencesDialog(tk.Toplevel):
                                 label=tr.tl('To window #{N}').format(N=idx+1),
                                 command=lambda i=idx, pl=p: ui_bridge.move_plugin_to_window(pl, i)
                             )
-                move_btn['menu'] = move_menu
-                move_btn.bind('<Button-1>', lambda e, rm=refresh_menu: rm())
+                    try:
+                        x = btn.winfo_rootx()
+                        y = btn.winfo_rooty() + btn.winfo_height()
+                        m.tk_popup(x, y)
+                    finally:
+                        try:
+                            m.grab_release()
+                        except Exception:
+                            pass
+                move_btn.configure(command=show_move_menu)
                 move_btn.grid(row=0, column=1, padx=(5, 0))
                 ttk.Button(
                     ctrl_frame,
