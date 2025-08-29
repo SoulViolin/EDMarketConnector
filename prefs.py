@@ -489,15 +489,6 @@ class PreferencesDialog(tk.Toplevel):
 
         self._populate_detach_controls(plugins_frame, row)
 
-        # Visual manager for plugin windows
-        ctrl2 = ttk.Frame(plugins_frame)
-        ctrl2.grid(columnspan=4, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=row.get())
-        ttk.Button(
-            ctrl2,
-            text=tr.tl('Open plugin windows manager'),
-            command=self._open_plugin_windows_manager
-        ).grid(row=0, column=0)
-
         ############################################################
         # Show plugins that failed to load
         ############################################################
@@ -606,14 +597,14 @@ class PreferencesDialog(tk.Toplevel):
 
     def _populate_detach_controls(self, plugins_frame, row):
         """Add global controls for managing plugin windows."""
-        controls = ttk.Frame(plugins_frame)
+        controls = nb.Frame(plugins_frame)
         controls.grid(columnspan=4, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=row.get())
         controls.columnconfigure(2, weight=1)
 
         ttk.Button(
             controls,
-            text=tr.tl('Create plugin window'),
-            command=self._create_plugin_window
+            text=tr.tl('Open plugin windows manager'),
+            command=self._open_plugin_windows_manager
         ).grid(row=0, column=0, padx=(0, 5))
 
         ttk.Button(
@@ -751,6 +742,31 @@ class PreferencesDialog(tk.Toplevel):
                 foreground="green" if is_enabled else "red"
             )
             label.grid(row=0, column=1, sticky=tk.W)
+
+            # Visibility by pilot state (Flight/Docking/Station) on the same row
+            vis_frame = ttk.Frame(plugin_frame)
+            vis_frame.grid(row=0, column=4, sticky=tk.W, padx=(10, 0))
+            base = f"plugin_vis_{plugin.name.replace('.', '_')}_show_"
+            var_flight = tk.BooleanVar(value=config.get_bool(base + 'flight', default=True))
+            var_docking = tk.BooleanVar(value=config.get_bool(base + 'docking', default=True))
+            var_station = tk.BooleanVar(value=config.get_bool(base + 'station', default=True))
+
+            def _save_vis(p=plugin, vf=var_flight, vd=var_docking, vs=var_station):
+                b = f"plugin_vis_{p.name.replace('.', '_')}_show_"
+                config.set(b + 'flight', vf.get())
+                config.set(b + 'docking', vd.get())
+                config.set(b + 'station', vs.get())
+                # Apply immediately if app window exists
+                try:
+                    app = ui_bridge.get_app_window()
+                    if app:
+                        app.update_plugin_visibility_by_pilot_state()
+                except Exception:
+                    pass
+
+            nb.Checkbutton(vis_frame, text='Flight', variable=var_flight, command=_save_vis).grid(row=0, column=0, padx=(0,6))
+            nb.Checkbutton(vis_frame, text='Docking', variable=var_docking, command=_save_vis).grid(row=0, column=1, padx=(0,6))
+            nb.Checkbutton(vis_frame, text='Station', variable=var_station, command=_save_vis).grid(row=0, column=2)
             
             # Create widget info
             widget_info = {

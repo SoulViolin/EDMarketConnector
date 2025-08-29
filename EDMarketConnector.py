@@ -414,7 +414,7 @@ import stats
 import td
 from commodity import COMMODITY_CSV
 from dashboard import dashboard
-from edmc_data import ship_name_map
+from edmc_data import ship_name_map, FlagsDocked, FlagsLanded, Flags2OnFootInStation, Flags2OnFootInHangar, Flags2OnFootSocialSpace
 from hotkey import hotkeymgr
 from l10n import translations as tr
 from monitor import monitor
@@ -992,6 +992,7 @@ class AppWindow:
         self.help_menu.add_command(command=lambda: prefs.help_open_system_profiler(self))  # Open System Profiler
 
         self.menubar.add_cascade(menu=self.help_menu)
+        # (removed) test window menu
         if sys.platform == 'win32':
             # Must be added after at least one "real" menu entry
             self.always_ontop = tk.BooleanVar(value=bool(config.get_int('always_ontop')))
@@ -1126,6 +1127,16 @@ class AppWindow:
         if args.start_min:
             logger.warning("Trying to start minimized")
             self.oniconify() if root.overrideredirect() else self.w.wm_iconify()
+
+        # Pilot state tracking (for plugin visibility)
+        self._pilot_is_docking = False
+        self._pilot_flags = 0
+        self._pilot_flags2 = 0
+        # Apply initial plugin visibility based on current state
+        try:
+            self.update_plugin_visibility_by_pilot_state()
+        except Exception:
+            pass
 
     def _ensure_pwm(self) -> None:
         if not hasattr(self, '_pwm'):
@@ -2021,6 +2032,19 @@ class AppWindow:
                 self.status['text'] = ''  # Periodically clear any old error
 
             self.w.update_idletasks()
+            # Track docking state transitions for plugin visibility
+            try:
+                ev = entry.get('event')
+                if ev in ('DockingRequested', 'DockingGranted'):
+                    self._pilot_is_docking = True
+                elif ev in ('Docked',):
+                    self._pilot_is_docking = False
+                elif ev in ('Undocked', 'DockingCancelled', 'DockingDenied', 'DockingTimeout'):
+                    self._pilot_is_docking = False
+                # Update plugin visibility
+                self.update_plugin_visibility_by_pilot_state()
+            except Exception:
+                pass
 
             # Companion login
             if entry['event'] in (None, 'StartUp', 'NewCommander', 'LoadGame') and monitor.cmdr:
@@ -2152,6 +2176,13 @@ class AppWindow:
             return
 
         entry = dashboard.status
+        # Capture flags for pilot state
+        try:
+            self._pilot_flags = int(entry.get('Flags', 0) or 0)
+            self._pilot_flags2 = int(entry.get('Flags2', 0) or 0)
+            self.update_plugin_visibility_by_pilot_state()
+        except Exception:
+            pass
         # Currently we don't do anything with these events
         if monitor.cmdr:
             err = plug.notify_dashboard_entry(monitor.cmdr, monitor.is_beta, entry)
@@ -2262,6 +2293,59 @@ class AppWindow:
     def help_releases(self, event=None) -> None:
         """Open Releases page in browser."""
         webbrowser.open('https://github.com/EDCD/EDMarketConnector/releases')
+
+    def _current_pilot_state(self) -> str:
+        """Return current pilot state: 'flight' | 'station' | 'docking'."""
+        if monitor.state.get('IsDocked'):
+            return 'station'
+        if self._pilot_is_docking:
+            return 'docking'
+        if self._pilot_flags2 & (Flags2OnFootInStation | Flags2OnFootInHangar | Flags2OnFootSocialSpace):
+            return 'station'
+        in_flight = (self._pilot_flags & FlagsDocked) == 0 and (self._pilot_flags & FlagsLanded) == 0
+        return 'flight' if in_flight else 'station'
+
+    def _plugin_key(self, plugin) -> str:
+        try:
+            # Use plugin.display name as key; ensure stable unique mapping
+            return str(getattr(plugin, 'name', 'plugin')).replace('.', '_')
+        except Exception:
+            return 'plugin'
+
+    def _plugin_should_show_for_state(self, plugin, state: str) -> bool:
+        base = f"plugin_vis_{self._plugin_key(plugin)}_show_"
+        default = True
+        return bool(config.get_bool(base + state, default=default))
+
+    def _set_plugin_visible(self, plugin, visible: bool) -> None:
+        row = self._plugin_rows.get(plugin)
+        if not row:
+            return
+        try:
+            frame = row.get('frame')
+            sep = row.get('sep')
+            if frame:
+                if visible and not frame.winfo_ismapped():
+                    frame.grid()
+                elif not visible and frame.winfo_ismapped():
+                    frame.grid_remove()
+            if sep:
+                if visible and not sep.winfo_ismapped():
+                    sep.grid()
+                elif not visible and sep.winfo_ismapped():
+                    sep.grid_remove()
+        except Exception:
+            pass
+
+    def update_plugin_visibility_by_pilot_state(self) -> None:
+        """Show/hide plugins based on current pilot state and per-plugin settings in config."""
+        state = self._current_pilot_state()
+        for plugin in list(self._plugin_rows.keys()):
+            try:
+                show = self._plugin_should_show_for_state(plugin, state)
+                self._set_plugin_visible(plugin, show)
+            except Exception:
+                continue
 
     class HelpAbout(tk.Toplevel):
         """The applications Help > About popup."""
