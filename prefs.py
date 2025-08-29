@@ -17,6 +17,7 @@ from types import TracebackType
 from typing import Any, Callable, Optional, Type
 import myNotebook as nb  # noqa: N813
 import plug
+import ui_bridge
 from config import appversion_nobuild, config
 from EDMCLogging import edmclogger, get_main_logger
 from hotkey import hotkeymgr
@@ -477,6 +478,17 @@ class PreferencesDialog(tk.Toplevel):
         # Create the plugin sections
         self._create_plugin_sections(plugins_frame, row)
 
+        # Detach/move controls
+        ttk.Separator(plugins_frame, orient=tk.HORIZONTAL).grid(
+            columnspan=4, padx=self.PADX, pady=self.SEPY, sticky=tk.EW, row=row.get()
+        )
+        nb.Label(
+            plugins_frame,
+            text=tr.tl('Plugin windows management')+':'
+        ).grid(padx=self.PADX, pady=self.PADY, sticky=tk.W, row=row.get())
+
+        self._populate_detach_controls(plugins_frame, row)
+
         ############################################################
         # Show plugins that failed to load
         ############################################################
@@ -582,6 +594,46 @@ class PreferencesDialog(tk.Toplevel):
                 text=tr.tl("No disabled plugins")
             )
             empty_label.grid(padx=self.PADX, pady=self.PADY, sticky=tk.W)
+
+    def _populate_detach_controls(self, plugins_frame, row):
+        """Add global controls for managing plugin windows."""
+        controls = ttk.Frame(plugins_frame)
+        controls.grid(columnspan=4, padx=self.PADX, pady=self.PADY, sticky=tk.EW, row=row.get())
+        controls.columnconfigure(2, weight=1)
+
+        ttk.Button(
+            controls,
+            text=tr.tl('Create plugin window'),
+            command=self._create_plugin_window
+        ).grid(row=0, column=0, padx=(0, 5))
+
+        ttk.Button(
+            controls,
+            text=tr.tl('Close all plugin windows'),
+            command=self._close_all_plugin_windows
+        ).grid(row=0, column=1)
+
+    def _create_plugin_window(self):
+        app = ui_bridge.get_app_window()
+        if not app:
+            return
+        try:
+            app.create_plugin_window()
+        except Exception:
+            pass
+
+    def _close_all_plugin_windows(self):
+        app = ui_bridge.get_app_window()
+        if not app:
+            return
+        try:
+            for w in list(getattr(app, '_plugin_windows', [])):
+                try:
+                    w.on_close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _categorize_plugins(self):
         """Categorize plugins into enabled and disabled lists."""
@@ -715,6 +767,38 @@ class PreferencesDialog(tk.Toplevel):
                 widget_info['up_button'] = up_button
                 widget_info['down_button'] = down_button
                 
+                # Detach/Move/Return controls
+                ctrl_frame = ttk.Frame(plugin_frame)
+                ctrl_frame.grid(row=0, column=3, padx=(10, 0))
+                ttk.Button(
+                    ctrl_frame,
+                    text=tr.tl('Detach'),
+                    command=lambda p=plugin: ui_bridge.detach_plugin(p)
+                ).grid(row=0, column=0)
+                move_btn = tk.Menubutton(ctrl_frame, text=tr.tl('Move'))
+                move_menu = tk.Menu(move_btn, tearoff=tk.FALSE)
+                # Populate dynamically on click
+                def refresh_menu(m=move_menu, p=plugin):
+                    m.delete(0, tk.END)
+                    count = ui_bridge.get_plugin_windows_count()
+                    if count == 0:
+                        m.add_command(label=tr.tl('No plugin windows'), state=tk.DISABLED)
+                    else:
+                        for idx in range(count):
+                            m.add_command(
+                                label=tr.tl('To window #{N}').format(N=idx+1),
+                                command=lambda i=idx, pl=p: ui_bridge.move_plugin_to_window(pl, i)
+                            )
+                move_btn['menu'] = move_menu
+                move_btn.bind('<Button-1>', lambda e, rm=refresh_menu: rm())
+                move_btn.grid(row=0, column=1, padx=(5, 0))
+                ttk.Button(
+                    ctrl_frame,
+                    text=tr.tl('Return'),
+                    command=lambda p=plugin: ui_bridge.return_plugin_to_main(p),
+                    state=tk.NORMAL if ui_bridge.has_plugin_ui(plugin) else tk.NORMAL
+                ).grid(row=0, column=2, padx=(5, 0))
+
                 self.enabled_plugin_widgets.append(widget_info)
             else:
                 self.disabled_plugin_widgets.append(widget_info)
@@ -1687,6 +1771,13 @@ class PreferencesDialog(tk.Toplevel):
         config.set('dark_text', self.theme_colors[0])
         config.set('dark_highlight', self.theme_colors[1])
         theme.apply(self.parent)
+        # Re-apply theme to all plugin windows after theme change
+        try:
+            app = ui_bridge.get_app_window()
+            if app:
+                app.apply_theme_to_all_windows()
+        except Exception:
+            pass
         if self.plugdir.get() != config.get_str('plugin_dir'):
             config.set(
                 'plugin_dir',

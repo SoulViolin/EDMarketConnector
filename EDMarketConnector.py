@@ -420,7 +420,285 @@ from l10n import translations as tr
 from monitor import monitor
 from theme import theme
 from ttkHyperlinkLabel import HyperlinkLabel, SHIPYARD_HTML_TEMPLATE
+import ui_bridge
+import json
 
+
+class PluginWindow:
+    """Detachable window to host one or more plugin UIs with app theme."""
+
+    def __init__(self, app):
+        self.app = app
+        self.w = tk.Toplevel(app.w)
+        self.w.title(f"{applongname} - Plugins")
+        self.w.rowconfigure(0, weight=0)
+        self.w.rowconfigure(1, weight=1)
+        self.w.columnconfigure(0, weight=1)
+        self._closing = False
+
+        # Minimal drag bar (no buttons), to move the borderless window
+        self.drag_offset: tuple[int | None, int | None] = (None, None)
+        self.drag_bar = tk.Frame(self.w, height=8, cursor='fleur')
+        self.drag_bar.grid(row=0, column=0, sticky=tk.EW)
+        self.drag_bar.bind('<Button-1>', self._drag_start)
+        self.drag_bar.bind('<B1-Motion>', self._drag_move)
+        self.drag_bar.bind('<ButtonRelease-1>', self._drag_end)
+
+        # Content container where plugins will be added
+        self.frame = tk.Frame(self.w, name=f"{appname.lower()}_plugins_window")
+        self.frame.grid(row=1, column=0, sticky=tk.NSEW)
+        self.frame.columnconfigure(0, weight=1)
+
+        # Theme and window attributes similar to main
+        theme.register(self.drag_bar)
+        theme.register(self.frame)
+        theme.apply(self.w)
+        # Synchronize drag_bar background and frame with current theme immediately
+        try:
+            self.drag_bar.configure(background=theme.current.get('background'))
+            self.frame.configure(background=theme.current.get('background'))
+        except Exception:
+            pass
+
+        try:
+            # Transparency only applied to themes where appropriate
+            ui_transparency = (config.get_int('ui_transparency') or 100) / 100
+            if theme.active == theme.THEME_TRANSPARENT or theme.active == theme.THEME_DARK:
+                self.w.wm_attributes('-alpha', ui_transparency)
+            else:
+                # Disable custom transparency for default theme
+                self.w.wm_attributes('-alpha', 1.0)
+        except Exception:
+            pass
+
+        try:
+            self.w.attributes('-topmost', config.get_int('always_ontop') and 1 or 0)
+        except Exception:
+            pass
+
+        # Remove native title bar/buttons consistently with theme
+        try:
+            if theme.active == theme.THEME_DEFAULT:
+                self.w.overrideredirect(False)
+            else:
+                self.w.overrideredirect(True)
+        except Exception:
+            pass
+
+        self.plugins = []  # list of plugin modules hosted here
+
+        # Ensure plugins go back to main on close
+        self.w.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # Theme handling same as main window
+        self.w.bind('<Map>', self.onmap)
+        self.w.bind('<Enter>', self.onenter)
+        self.w.bind('<FocusIn>', self.onenter)
+        self.w.bind('<Leave>', self.onleave)
+        self.w.bind('<FocusOut>', self.onleave)
+        # Track minimize actions to sync with main window
+        self.w.bind('<Unmap>', self._on_unmap)
+
+    def add_plugin(self, plugin):
+        """Create plugin UI inside this window."""
+        plugin_no = len(self.plugins)
+        plugin_sep = tk.Frame(self.frame, highlightthickness=1, name=f"plugin_hr_detached_{plugin_no + 1}")
+        plugin_sep.grid(column=0, sticky=tk.EW)
+
+        plugin_frame = tk.Frame(self.frame, name=f"plugin_detached_{plugin_no + 1}")
+        ui_row = self.frame.grid_size()[1]
+        plugin_frame.grid(row=ui_row, column=0, sticky=tk.NSEW)
+        plugin_frame.columnconfigure(1, weight=1)
+
+        appitem = plugin.get_app(plugin_frame)
+        if isinstance(appitem, tuple) and len(appitem) == 2:
+            ui_row = self.frame.grid_size()[1]
+            appitem[0].grid(row=ui_row, column=0, sticky=tk.W)
+            appitem[1].grid(row=ui_row, column=1, sticky=tk.EW)
+        elif appitem:
+            appitem.grid(column=0, sticky=tk.EW, columnspan=2)
+
+        # Spacing similar to main
+        for child in plugin_frame.winfo_children():
+            try:
+                child.grid_configure(padx=self.app.PADX, pady=(sys.platform != 'win32' or isinstance(child, tk.Frame)) and 2 or 0)
+            except Exception:
+                pass
+
+        # Apply theme immediately to newly created plugin UI
+        theme.update(plugin_frame)
+
+        self.plugins.append(plugin)
+
+        # Track rows for removal later
+        self.app._plugin_rows[plugin] = {
+            'parent': self.frame,
+            'sep': plugin_sep,
+            'frame': plugin_frame,
+            'host': self,
+        }
+
+    def remove_plugin(self, plugin):
+        """Remove widgets for plugin from this window without destroying the window."""
+        row = self.app._plugin_rows.get(plugin)
+        if not row:
+            return
+        try:
+            row['frame'].grid_forget()
+            row['frame'].destroy()
+        except Exception:
+            pass
+        try:
+            row['sep'].grid_forget()
+            row['sep'].destroy()
+        except Exception:
+            pass
+        try:
+            self.plugins.remove(plugin)
+        except Exception:
+            pass
+        self.app._plugin_rows.pop(plugin, None)
+
+        # Auto-close empty plugin window without re-returning plugins
+        if len(self.plugins) == 0:
+            self._destroy_window_only()
+
+    def on_close(self):
+        """Return hosted plugins to main window on close."""
+        if self._closing:
+            return
+        # Copy list to avoid modification during iteration
+        for plugin in list(self.plugins):
+            try:
+                current = self.app._plugin_rows.get(plugin, {})
+                if current.get('host') != 'main':
+                    self.app.return_plugin_to_main(plugin)
+            except Exception:
+                pass
+        self._destroy_window_only()
+
+    def _destroy_window_only(self):
+        """Destroy this window and unregister it without moving any plugins."""
+        try:
+            self._closing = True
+            self.w.destroy()
+        except Exception:
+            pass
+        finally:
+            try:
+                if self in self.app._plugin_windows:
+                    self.app._plugin_windows.remove(self)
+            except Exception:
+                pass
+
+    # Drag handlers for borderless window
+    def _drag_start(self, event):
+        try:
+            self.drag_offset = (event.x_root - self.w.winfo_rootx(), event.y_root - self.w.winfo_rooty())
+        except Exception:
+            self.drag_offset = (event.x, event.y)
+
+    def _drag_move(self, event):
+        try:
+            if self.drag_offset[0] is None or self.drag_offset[1] is None:
+                return
+            x = event.x_root - self.drag_offset[0]
+            y = event.y_root - self.drag_offset[1]
+            self.w.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+    def _drag_end(self, event):
+        # Keep last offset for smoother re-grab; no-op
+        return
+
+
+    # Theme handlers duplicated from main window for plugin windows
+    def onmap(self, event=None):
+        try:
+            if event is None or event.widget == self.w:
+                # Avoid theme churn during app-level sync
+                if not getattr(self.app, 'synchronizing_windows', False):
+                    theme.apply(self.w)
+        except Exception:
+            pass
+
+    def onenter(self, event=None):
+        try:
+            if config.get_int('theme') == theme.THEME_TRANSPARENT:
+                self.w.attributes("-transparentcolor", '')
+        except Exception:
+            pass
+
+    def onleave(self, event=None):
+        try:
+            if config.get_int('theme') == theme.THEME_TRANSPARENT and (event is None or event.widget == self.w):
+                self.w.attributes("-transparentcolor", 'grey4')
+        except Exception:
+            pass
+
+    def apply_theme(self):
+        """Apply current theme and window attributes to this plugin window.
+        Ensures transparency and decorations switch correctly when theme changes.
+        """
+        try:
+            theme.apply(self.w)
+        except Exception:
+            pass
+
+    def _on_unmap(self, event=None):
+        """When a plugin window is minimized/hidden by the user, mirror that to the main window."""
+        try:
+            # Suppress recursion if app is synchronizing or minimizing
+            if getattr(self.app, 'synchronizing_windows', False) or getattr(self.app, 'minimizing', False):
+                return
+            # Only react to our own unmap event
+            if event is not None and event.widget is not self.w:
+                return
+            # Mirror minimize to the main window and other plugins
+            self.app.minimize_entire_app(trigger='plugin')
+        except Exception:
+            pass
+        # Sync window attributes with current theme settings
+        try:
+            ui_transparency = (config.get_int('ui_transparency') or 100) / 100
+            current_theme = config.get_int('theme')
+            if current_theme == theme.THEME_DEFAULT:
+                # No custom transparency; ensure normal decorations
+                self.w.wm_attributes('-alpha', 1.0)
+                try:
+                    self.w.attributes('-transparentcolor', '')
+                except Exception:
+                    pass
+                try:
+                    self.w.overrideredirect(False)
+                except Exception:
+                    pass
+            else:
+                # Dark or Transparent theme
+                try:
+                    self.w.wm_attributes('-alpha', ui_transparency)
+                except Exception:
+                    pass
+                try:
+                    if current_theme == theme.THEME_TRANSPARENT:
+                        # Default to unfocused state; onenter/onleave will toggle
+                        self.w.attributes('-transparentcolor', 'grey4')
+                    else:
+                        self.w.attributes('-transparentcolor', '')
+                except Exception:
+                    pass
+                try:
+                    self.w.overrideredirect(True)
+                except Exception:
+                    pass
+            # Topmost follows config
+            try:
+                self.w.attributes('-topmost', config.get_int('always_ontop') and 1 or 0)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 class AppWindow:
     """Define the main application window."""
@@ -442,6 +720,7 @@ class AppWindow:
         self.w = master
         self.w.title(applongname)
         self.minimizing = False
+        self.synchronizing_windows = False  # Guard to suppress recursive sync during theme/apply cycles
         self.w.rowconfigure(0, weight=1)
         self.w.columnconfigure(0, weight=1)
 
@@ -454,7 +733,13 @@ class AppWindow:
             from simplesystray import SysTrayIcon
 
             def open_window(systray: 'SysTrayIcon', *args) -> None:
-                self.w.deiconify()
+                # Restore main + plugin windows from tray with sync guard
+                self.synchronizing_windows = True
+                try:
+                    self.w.deiconify()
+                    self.restore_all_plugin_windows()
+                finally:
+                    self.synchronizing_windows = False
 
             logfile_loc = pathlib.Path(config.app_dir_path / 'logs')
             menu_options = (
@@ -489,6 +774,11 @@ class AppWindow:
         self.main_info_frame = frame
         frame.grid(sticky=tk.NSEW)
         frame.columnconfigure(1, weight=1)
+
+        # Detachable plugins infrastructure
+        self._plugin_rows: dict = {}
+        self._plugin_windows: list[PluginWindow] = []
+        self._plugins_parent_main = frame
 
         self.cmdr_label = tk.Label(frame, name='cmdr_label')
         self.cmdr = tk.Label(frame, compound=tk.RIGHT, anchor=tk.W, name='cmdr')
@@ -558,6 +848,15 @@ class AppWindow:
 
                 else:
                     appitem.grid(columnspan=2, sticky=tk.EW)
+
+                # Register plugin row; detach/move now managed via Preferences > Plugins
+                self._plugin_rows[plugin] = {
+                    'parent': frame,
+                    'sep': plugin_sep,
+                    'frame': plugin_frame,
+                    'host': 'main',
+                }
+                # Context menu removed; controlled from Preferences
 
             else:
                 # This plugin didn't provide any UI, so drop the frames
@@ -759,10 +1058,261 @@ class AppWindow:
         config.delete('password', suppress=True)
         config.delete('logdir', suppress=True)
         self.postprefs(False)  # Companion login happens in callback from monitor
+        # Restore plugin window layout and positions after UI initialization
+        try:
+            self.restore_plugin_layout()
+        except Exception:
+            pass
         self.toggle_suit_row(visible=False)
         if args.start_min:
             logger.warning("Trying to start minimized")
             self.oniconify() if root.overrideredirect() else self.w.wm_iconify()
+
+    def create_plugin_window(self):
+        """Create and register an empty plugin window."""
+        win = PluginWindow(self)
+        self._plugin_windows.append(win)
+        return win
+
+    def apply_theme_to_all_windows(self):
+        """Re-apply theme to all plugin windows (used after theme change)."""
+        self.synchronizing_windows = True
+        try:
+            for win in list(getattr(self, '_plugin_windows', [])):
+                try:
+                    win.apply_theme()
+                except Exception:
+                    pass
+        finally:
+            self.synchronizing_windows = False
+
+    def minimize_all_plugin_windows(self, to_tray: bool = False) -> None:
+        """Minimize or hide all plugin windows to follow main window state.
+        If to_tray is True, windows are withdrawn (hidden). Otherwise they are iconified.
+        """
+        for win in list(getattr(self, '_plugin_windows', [])):
+            try:
+                if to_tray:
+                    win.w.withdraw()
+                else:
+                    win.w.iconify()
+            except Exception:
+                pass
+
+    def restore_all_plugin_windows(self) -> None:
+        """Restore (deiconify) all plugin windows to follow main window restore."""
+        for win in list(getattr(self, '_plugin_windows', [])):
+            try:
+                win.w.deiconify()
+            except Exception:
+                pass
+
+    def save_plugin_layout(self) -> None:
+        """Persist positions of plugin windows and plugin-to-host assignments."""
+        try:
+            layout = {"windows": [], "assignments": {}}
+
+            # Map window instance to stable id
+            window_id_by_obj: dict[PluginWindow, str] = {}
+            for idx, win in enumerate(getattr(self, '_plugin_windows', []), start=1):
+                wid = f"w{idx}"
+                try:
+                    # geometry format like 'WxH+X+Y' or '+X+Y'
+                    geom = win.w.geometry()
+                    parts = geom.split('+')
+                    if len(parts) >= 3:
+                        x, y = parts[1], parts[2]
+                        geometry = f"+{x}+{y}"
+                    else:
+                        geometry = ''
+                except Exception:
+                    geometry = ''
+                layout["windows"].append({"id": wid, "geometry": geometry})
+                window_id_by_obj[win] = wid
+
+            # Assignments: plugin name -> 'main' or window id
+            for plugin, row in list(getattr(self, '_plugin_rows', {}).items()):
+                try:
+                    host = row.get('host')
+                    if host == 'main':
+                        layout["assignments"][plugin.name] = 'main'
+                    elif isinstance(host, PluginWindow):
+                        wid = window_id_by_obj.get(host)
+                        if wid:
+                            layout["assignments"][plugin.name] = wid
+                except Exception:
+                    pass
+
+            config.set('plugin_layout', json.dumps(layout))
+        except Exception:
+            # Best-effort; don't block shutdown
+            pass
+
+    def restore_plugin_layout(self) -> None:
+        """Restore plugin windows positions and plugin assignments from config."""
+        try:
+            data_str = config.get_str('plugin_layout')
+            if not data_str:
+                return
+            data = json.loads(data_str)
+
+            windows = data.get('windows') or []
+            assignments: dict = data.get('assignments') or {}
+
+            # Create windows in saved order and set their geometry
+            id_to_window: dict[str, PluginWindow] = {}
+            for win_info in windows:
+                wid = win_info.get('id')
+                if not wid:
+                    continue
+                win = self.create_plugin_window()
+                try:
+                    geom = win_info.get('geometry')
+                    if geom:
+                        win.w.geometry(geom)
+                except Exception:
+                    pass
+                id_to_window[wid] = win
+
+            # Move plugins per assignments
+            for plugin in plug.PLUGINS:
+                try:
+                    target = assignments.get(plugin.name)
+                    if not target or target == 'main':
+                        continue
+                    target_win = id_to_window.get(str(target))
+                    if target_win:
+                        self.move_plugin_to_window(plugin, target_win)
+                except Exception:
+                    # Ignore bad/missing plugins or layout mismatches
+                    pass
+        except Exception:
+            # Ignore malformed data
+            pass
+
+    def minimize_entire_app(self, trigger: str = 'main') -> None:
+        """Minimize or hide the whole application (main + plugin windows).
+        Decides between tray-hide and taskbar-minimize based on settings.
+        The 'trigger' arg is informational only.
+        """
+        self.minimizing = True
+        self.synchronizing_windows = True
+        try:
+            minimize_to_tray = (
+                sys.platform == 'win32'
+                and config.get_bool('minimize_system_tray')
+                and not bool(config.get_int('no_systray'))
+            )
+            if minimize_to_tray:
+                try:
+                    self.w.withdraw()
+                except Exception:
+                    pass
+                self.minimize_all_plugin_windows(to_tray=True)
+            else:
+                # Use existing flow for main window minimize
+                self.oniconify()
+        finally:
+            # Clear flag slightly later to avoid race with Unmap handlers
+            def _clear_flags():
+                self.minimizing = False
+                self.synchronizing_windows = False
+            self.w.after(0, _clear_flags)
+
+    # Context menu removed; plugin detaching is configured via Preferences > Plugins
+
+    def _remove_plugin_from_current_host(self, plugin):
+        """Remove plugin UI from wherever it currently resides."""
+        row = self._plugin_rows.get(plugin)
+        if not row:
+            return
+        host = row.get('host')
+        if host == 'main':
+            try:
+                row['frame'].grid_forget()
+                row['frame'].destroy()
+            except Exception:
+                pass
+            try:
+                row['sep'].grid_forget()
+                row['sep'].destroy()
+            except Exception:
+                pass
+            self._plugin_rows.pop(plugin, None)
+        elif isinstance(host, PluginWindow):
+            host.remove_plugin(plugin)
+
+    def detach_plugin_to_new_window(self, plugin):
+        """Detach the plugin to a newly created plugin window."""
+        self._remove_plugin_from_current_host(plugin)
+        win = PluginWindow(self)
+        self._plugin_windows.append(win)
+        try:
+            win.add_plugin(plugin)
+        except Exception as e:
+            logger.debug('Error adding plugin to new window', exc_info=e)
+            # On failure, try to return to main to avoid losing UI
+            self.return_plugin_to_main(plugin)
+
+    def move_plugin_to_window(self, plugin, target_window):
+        """Move plugin UI to an existing plugin window."""
+        if target_window not in self._plugin_windows:
+            return
+        self._remove_plugin_from_current_host(plugin)
+        try:
+            target_window.add_plugin(plugin)
+        except Exception as e:
+            logger.debug('Error moving plugin to window', exc_info=e)
+            self.return_plugin_to_main(plugin)
+
+    def return_plugin_to_main(self, plugin):
+        """Recreate plugin UI back in the main window area."""
+        # If hosted in a detached window, remove it there first
+        row = self._plugin_rows.get(plugin)
+        if row and row.get('host') != 'main':
+            self._remove_plugin_from_current_host(plugin)
+        # If already hosted in main (or nothing to move), avoid duplication
+        row = self._plugin_rows.get(plugin)
+        if row and row.get('host') == 'main':
+            return
+        # Recreate as in initial layout
+        frame = self._plugins_parent_main
+        plugin_no = sum(1 for r in self._plugin_rows.values() if r.get('host') == 'main')
+        plugin_sep = tk.Frame(frame, highlightthickness=1, name=f"plugin_hr_returned_{plugin_no + 1}")
+        plugin_frame = tk.Frame(frame, name=f"plugin_returned_{plugin_no + 1}")
+
+        appitem = plugin.get_app(plugin_frame)
+        if appitem:
+            plugin_sep.grid(columnspan=2, sticky=tk.EW)
+            ui_row = frame.grid_size()[1]
+            plugin_frame.grid(row=ui_row, columnspan=2, sticky=tk.NSEW)
+            plugin_frame.columnconfigure(1, weight=1)
+            if isinstance(appitem, tuple) and len(appitem) == 2:
+                ui_row = frame.grid_size()[1]
+                appitem[0].grid(row=ui_row, column=0, sticky=tk.W)
+                appitem[1].grid(row=ui_row, column=1, sticky=tk.EW)
+            else:
+                appitem.grid(columnspan=2, sticky=tk.EW)
+
+            for child in plugin_frame.winfo_children():
+                try:
+                    child.grid_configure(padx=self.PADX, pady=(sys.platform != 'win32' or isinstance(child, tk.Frame)) and 2 or 0)
+                except Exception:
+                    pass
+
+            theme.register(plugin_frame)
+            self._plugin_rows[plugin] = {
+                'parent': frame,
+                'sep': plugin_sep,
+                'frame': plugin_frame,
+                'host': 'main',
+            }
+            # Context menu removed; managed via Preferences > Plugins
+
+        else:
+            # If plugin has no UI, drop frames
+            plugin_frame.destroy()
+            plugin_sep.destroy()
 
     def update_suit_text(self) -> None:
         """Update the suit text for current type and loadout."""
@@ -1966,6 +2516,12 @@ class AppWindow:
         x, y = self.w.geometry().split('+')[1:3]  # e.g. '212x170+2881+1267'
         config.set('geometry', f'+{x}+{y}')
 
+        # Save plugin layout and window positions
+        try:
+            self.save_plugin_layout()
+        except Exception:
+            pass
+
         # Let the user know we're shutting down.
         # LANG: The application is shutting down
         self.status['text'] = tr.tl('Shutting down...')
@@ -2034,13 +2590,34 @@ class AppWindow:
 
     def default_iconify(self, event=None) -> None:
         """Handle the Windows default theme 'minimise' button."""
-        # If we're meant to "minimize to system tray" then hide the window so no taskbar icon is seen
-        if (sys.platform == 'win32'
+        # This gets called for more than the root widget, so only react to that
+        if str(event.widget) != '.':
+            return
+        self.minimizing = True
+        self.synchronizing_windows = True
+        try:
+            minimize_to_tray = (
+                sys.platform == 'win32'
                 and config.get_bool('minimize_system_tray')
-                and not bool(config.get_int('no_systray'))):
-            # This gets called for more than the root widget, so only react to that
-            if str(event.widget) == '.':
+                and not bool(config.get_int('no_systray'))
+            )
+            # If we're meant to "minimize to system tray" then hide the window so no taskbar icon is seen
+            if minimize_to_tray:
                 self.w.withdraw()
+            else:
+                # When not to tray, Windows button already minimized us; ensure consistency below
+                pass
+            # Always sync plugin windows with the main window action
+            try:
+                self.minimize_all_plugin_windows(to_tray=minimize_to_tray)
+            except Exception:
+                pass
+        finally:
+            # Clear flag slightly later to avoid race with Unmap handlers
+            def _clear_flags():
+                self.minimizing = False
+                self.synchronizing_windows = False
+            self.w.after(0, _clear_flags)
 
     def oniconify(self, event=None) -> None:
         """Handle the minimize button on non-Default theme main window."""
@@ -2049,10 +2626,15 @@ class AppWindow:
         self.w.update_idletasks()  # Size and windows styles get recalculated here
         self.w.wait_visibility()  # Need main window to be re-created before returning
         theme.active = None  # So theme will be re-applied on map
+        # Sync plugin windows minimization
+        try:
+            self.minimize_all_plugin_windows(to_tray=False)
+        except Exception:
+            pass
 
     # TODO: Confirm this is unused and remove.
     def onmap(self, event=None) -> None:
-        """Perform a now unused function."""
+        """Ensure theme is applied when the main window is mapped again."""
         if event.widget == self.w:
             theme.apply(self.w)
 
@@ -2413,6 +2995,7 @@ sys.path: {sys.path}'''
     # Start the main event loop
     try:
         check_for_fdev_updates()
+        ui_bridge.set_app_window(app)
         root.mainloop()
     except KeyboardInterrupt:
         logger.info("Ctrl+C Detected, Attempting Clean Shutdown")

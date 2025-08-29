@@ -342,17 +342,16 @@ class _Theme:
 
             elif 'cursor' in widget.keys() and str(widget['cursor']) not in ['', 'arrow']:
                 # Hack - highlight widgets like HyperlinkLabel with a non-default cursor
-                if 'fg' not in attribs:
+                # Apply only attributes actually available for the widget
+                if 'foreground' in widget.keys() and 'fg' not in attribs:
                     widget['foreground'] = self.current['highlight']
-                    if 'insertbackground' in widget.keys():  # tk.Entry
-                        widget['insertbackground'] = self.current['foreground']
-
-                if 'bg' not in attribs:
+                if 'insertbackground' in widget.keys():  # tk.Entry
+                    widget['insertbackground'] = self.current['foreground']
+                if ('background' in widget.keys() or isinstance(widget, tk.Canvas)) and 'bg' not in attribs:
                     widget['background'] = self.current['background']
                     if 'highlightbackground' in widget.keys():  # tk.Entry
                         widget['highlightbackground'] = self.current['background']
-
-                if 'font' not in attribs:
+                if 'font' in widget.keys() and 'font' not in attribs:
                     widget['font'] = self.current['font']
 
             elif 'activeforeground' in widget.keys():
