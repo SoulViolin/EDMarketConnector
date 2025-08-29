@@ -429,6 +429,8 @@ class PluginWindow:
 
     def __init__(self, app):
         self.app = app
+        # Flag to suppress Unmap reaction during theme application
+        self._applying_theme = False
         self.w = tk.Toplevel(app.w)
         self.w.title(f"{applongname} - Plugins")
         self.w.rowconfigure(0, weight=0)
@@ -619,7 +621,13 @@ class PluginWindow:
             if event is None or event.widget == self.w:
                 # Avoid theme churn during app-level sync
                 if not getattr(self.app, 'synchronizing_windows', False):
-                    theme.apply(self.w)
+                    # Suppress Unmap handler during theme application
+                    # because theme.apply calls withdraw()/deiconify()
+                    self._applying_theme = True
+                    try:
+                        theme.apply(self.w)
+                    finally:
+                        self._applying_theme = False
         except Exception:
             pass
 
@@ -642,13 +650,63 @@ class PluginWindow:
         Ensures transparency and decorations switch correctly when theme changes.
         """
         try:
-            theme.apply(self.w)
+            # Protect against side Unmap during theme application
+            self._applying_theme = True
+            try:
+                theme.apply(self.w)
+            finally:
+                self._applying_theme = False
+
+            # After applying theme, explicitly synchronize window attributes
+            ui_transparency = (config.get_int('ui_transparency') or 100) / 100
+            current_theme = config.get_int('theme')
+            if current_theme == theme.THEME_DEFAULT:
+                # Full opacity and standard decorations
+                try:
+                    self.w.wm_attributes('-alpha', 1.0)
+                except Exception:
+                    pass
+                try:
+                    self.w.attributes('-transparentcolor', '')
+                except Exception:
+                    pass
+                try:
+                    self.w.overrideredirect(False)
+                except Exception:
+                    pass
+            else:
+                # Dark or Transparent theme
+                try:
+                    self.w.wm_attributes('-alpha', ui_transparency)
+                except Exception:
+                    pass
+                try:
+                    if current_theme == theme.THEME_TRANSPARENT:
+                        # Default as inactive state; onenter/onleave will toggle
+                        self.w.attributes('-transparentcolor', 'grey4')
+                    else:
+                        self.w.attributes('-transparentcolor', '')
+                except Exception:
+                    pass
+                try:
+                    self.w.overrideredirect(True)
+                except Exception:
+                    pass
+
+            # Always follow the always-on-top setting
+            try:
+                self.w.attributes('-topmost', config.get_int('always_ontop') and 1 or 0)
+            except Exception:
+                pass
         except Exception:
             pass
 
     def _on_unmap(self, event=None):
         """When a plugin window is minimized/hidden by the user, mirror that to the main window."""
         try:
+            # Ignore Unmap caused by temporary withdraw() during theme application
+            if getattr(self, '_applying_theme', False):
+                return
             # Suppress recursion if app is synchronizing or minimizing
             if getattr(self.app, 'synchronizing_windows', False) or getattr(self.app, 'minimizing', False):
                 return
@@ -2592,6 +2650,9 @@ class AppWindow:
         """Handle the Windows default theme 'minimise' button."""
         # This gets called for more than the root widget, so only react to that
         if str(event.widget) != '.':
+            return
+        # If window synchronization/theme application is in progress, ignore system Unmap
+        if getattr(self, 'synchronizing_windows', False):
             return
         self.minimizing = True
         self.synchronizing_windows = True

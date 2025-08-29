@@ -1770,14 +1770,25 @@ class PreferencesDialog(tk.Toplevel):
         config.set('theme', self.theme.get())
         config.set('dark_text', self.theme_colors[0])
         config.set('dark_highlight', self.theme_colors[1])
-        theme.apply(self.parent)
-        # Re-apply theme to all plugin windows after theme change
+        # Apply theme with suppression of Unmap reactions for main window and plugins
+        app = None
         try:
             app = ui_bridge.get_app_window()
-            if app:
-                app.apply_theme_to_all_windows()
         except Exception:
-            pass
+            app = None
+        if app:
+            app.synchronizing_windows = True
+        try:
+            theme.apply(self.parent)
+            # Reapply theme to plugin windows
+            try:
+                if app:
+                    app.apply_theme_to_all_windows()
+            except Exception:
+                pass
+        finally:
+            if app:
+                app.synchronizing_windows = False
         if self.plugdir.get() != config.get_str('plugin_dir'):
             config.set(
                 'plugin_dir',
